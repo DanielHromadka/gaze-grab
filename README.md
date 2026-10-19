@@ -1,0 +1,69 @@
+# Gaze Grab
+
+Prototyp ovládání kurzoru pravou rukou, gest jedné i obou rukou a diagnostiky očí, bez headsetu. Rust zpracovává signály a stavový automat, nativní AppKit/AVFoundation zajišťuje kameru a malé plovoucí okno. Apple Vision detekuje klouby ruky a obličejové/oční body na běžném Macu (macOS 12+).
+
+## Spuštění
+
+```sh
+./scripts/install-gaze-grab.sh
+```
+
+Aplikace se nainstaluje do `/Applications/Gaze Grab.app`. V **Rustletu → Gaze Grab → Nastavení…** otevřeš diagnostiku; samostatně je dostupná také přes ikonu oka v horní liště. Nástroj se přidává do `manager/resources/catalog.json`.
+
+1. Otevři diagnostiku a klikni na **Zapnout kameru**. macOS při prvním použití požádá o přístup ke kameře. V rozbalovacím seznamu lze vybrat jinou kameru.
+2. Ukaž jednu nebo obě celé otevřené ruce. Pravá je tyrkysová, levá fialová; popisky jsou anatomické a nezávislé na straně obrazu. Každá má vlastní stav gest. Ukaž celou otevřenou ruku. Po 100 ms platného otevření je systém připravený.
+3. Spoj **palec, ukazovák a prostředník**. Stabilní sevření po 150 ms potvrdí **UCHOPENÍ**, špičky zezelenají a při pohybu se kreslí čára od počátečního místa uchopení.
+4. Prsty od sebe oddal a nech je otevřené 100 ms. Zobrazí se **PUŠTĚNÍ**.
+5. Tlačítko **Vypnout kameru**, zavření diagnostického okna, uspání nebo odhlášení relace vypnou snímání. Spuštění nástroje správcem kameru samo nezapíná. Kamera se po probuzení sama znovu nezapne.
+
+## Kurzor, klik a scroll
+
+Ve výchozím zkušebním režimu se neposílají události myši. Bílý kříž v náhledu ukazuje polohu virtuálního kurzoru.
+
+- **Pohyb:** poloha pravé dlaně se zrcadleně mapuje na hlavní monitor a vyhlazuje. Středních 70 % obrazu pokrývá monitor; levá ruka sama kurzor nepřebírá. Po získání pravé ruky se čeká 300 ms na stabilní sledování.
+- **Klik:** natáhni jen ukazovák, ostatní tři prsty ohni. Po 220 ms se klik připraví. Krátce zatlač ukazovák ke kameře: dostatečné zkrácení jeho projekce vůči šířce dlaně po alespoň 60 ms vyvolá jeden klik. Další vyžaduje znovu natažený ukazovák a uplynutí prodlevy 700 ms. Posuvník **Citlivost kliku** mění požadované zkrácení (vyšší hodnota = menší nutná změna).
+- **Scroll jednou rukou:** zvedni pravý ukazovák a prostředník, prsteník a malík ohni. Po potvrzení pózy 180 ms pohybuj prsty nahoru/dolů. Kurzor během scrollování stojí.
+- **Scroll oběma rukama:** vyber druhou volbu v seznamu **Scroll**. Levou spoj palec, ukazovák a prostředník a drž potvrzené sevření. Pravou s nataženým ukazovákem pohybuj nahoru/dolů. Po puštění levé se pravá vrací k pohybu kurzoru.
+- **Systémová myš:** zapni kameru a přepínač **Ovládat systémový kurzor**. Povol aplikaci v macOS → Soukromí a zabezpečení → **Zpřístupnění** a přepínač zapni znovu. Ovládání začíná po 2 sekundách. **Esc**, vypnutí kamery, zavření okna, uspání nebo chybějící výsledky jej vypnou. Přepínač se po spuštění aplikace nikdy sám nezapne.
+
+**Klik je experimentální odhad z 2D kamery, nikoli měření hloubky.** Kamera může zaměnit pohyb ke kameře za ohnutí prstu nebo natočení ruky. Začni zkušebním režimem a uprav citlivost podle své polohy a světla. Systémový drag-and-drop tříprstým sevřením ještě zapojený není.
+
+Nejasná strana ruky nebo dvě detekce označené stejnou stranou danou stranu vyřadí. Výpadek potřebných kloubů, skok polohy nebo časová mezera ruší připravený klik; ruka se musí znovu potvrdit. Při scrollování se klik nevyhodnocuje. Obě ruce lze sledovat současně a jejich tříprstá gesta jsou nezávislá. Volba scrollu, citlivost kliku a práh sevření se ukládají lokálně.
+
+## Diagnostika
+
+- Živý zrcadlený náhled a obrysy ruky, očí a zornic ve správných souřadnicích i při změně poměru stran kamery.
+- Rozpoznání tříprstého sevření s časovým potvrzením a hysterezí. Samotné spojení palce a ukazováku nestačí.
+- Vzdálenosti špiček normalizované šířkou dlaně, jistota potřebných kloubů, počty rukou/obličejů, FPS a délka analýzy.
+- Nastavitelný práh sevření (výchozí 0,35 šířky dlaně), uvolnění nad 1,6násobkem prahu.
+- Historie posledních čtyř událostí v paměti. Chybějící ruka, potřebné klouby nebo skok polohy zruší uchopení; výpadek sledování není vydáván za záměrné puštění. Při spuštění se sevřenou rukou se čeká na otevření.
+- Oční signál z polohy obou zornic vůči obrysům očí. Výpočet kompenzuje natočení obrysů, odmítá zavřené oči, chybějící body a velký nesoulad mezi očima. Při více obličejích se oční signál nepoužije.
+
+**Oční signál je nekalibrovaný příznak z 2D obrazu. Není to ještě poloha pohledu na monitoru.** Obličejové landmarky z běžné kamery nemusí dostatečně přesně odpovídat skutečnému pohledu; mrkání, brýle, světlo, vzdálenost i pohyb hlavy ho ovlivňují. Ukazatel X/Y v diagnostice zobrazuje právě tento signál. Oční signál zatím neřídí systémový kurzor; ten lze ovládat pravou rukou podle postupu výše.
+
+## Další kroky k demu na ploše
+
+1. **Hotovo:** kamera, detekce a diagnostika gest/očí.
+2. Kalibrační body na monitoru, odhad a měření chyby pohledu při přirozené poloze hlavy, vyhlazený virtuální kurzor. Ověřit, zda nativní oční příznaky stačí; případně doplnit specializovaný model pro odhad pohledu.
+3. Spojení pohledu a ruky: při sevření zamknout cíl pod virtuálním kurzorem, polohu potom posouvat relativním pohybem ruky a pustit po potvrzeném otevření. Nejprve na testovacím plátně.
+4. Zapojit systémový drag-and-drop ve Finderu po povolení Zpřístupnění, s jasným zrušením při ztrátě sledování. Ověřit skutečný přesun souboru na ploše.
+
+## Soukromí a provoz
+
+Snímání používá pouze video. Obraz a souřadnice se zpracovávají lokálně v paměti; neukládají se fotografie, video ani diagnostické logy do souborů a nic se neodesílá na server. Nástroj nevyžaduje přístup k mikrofonu ani zachycení obrazovky. Zpřístupnění je potřeba jen pro zapnuté ovládání systémové myši, kamera a diagnostika fungují bez něj. Oprávnění kamery vyřizuje standardní dialog macOS. Podepsaný balíček má jen odpovídající camera entitlement.
+
+AVCaptureSession se konfiguruje na vlastní frontě, Vision běží sériově na druhé frontě s limitem 15 analýz za sekundu a zahazováním opožděných snímků. Výsledky po zastavení nebo změně session se ignorují pomocí generace výstupu. UI zobrazuje skutečnou rychlost zpracování; při nedostatku snímků zruší platnost překryvu.
+
+## Ověření
+
+```sh
+cargo test -p gaze-grab
+cargo run -p gaze-grab -- --vision-probe
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Testy ověřují nezávislost obou rukou při změně pořadí detekcí, odmítnutí nejasné strany, přípravu/potvrzení/opakování kliku, scroll bez kliku a oba způsoby scrollování, otevření před uchopením, rozlišení dvou/tří prstů, potvrzení a hysterezi, rušení při ztrátě ruky/skoku/změně času, nezávislost vzdáleností na měřítku a poměru stran a odmítnutí mrknutí/chybějících zornic. `--vision-probe` spustí skutečné Vision requesty nad prázdným lokálním snímkem bez použití kamery a ověří, že nevymýšlejí ruku ani obličej.
+
+## Použitá nativní API
+
+[Apple Vision: rozlišení strany ruky](https://developer.apple.com/documentation/vision/vnhumanhandposeobservation/chirality), [ověření Zpřístupnění](https://developer.apple.com/documentation/applicationservices/1459186-axisprocesstrustedwithoptions), [události scrollování](https://developer.apple.com/documentation/coregraphics/cgeventcreatescrollwheelevent).

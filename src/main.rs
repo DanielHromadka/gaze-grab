@@ -1,3 +1,4 @@
+mod click;
 mod control;
 mod tracking;
 use std::ffi::{c_char, CStr, CString};

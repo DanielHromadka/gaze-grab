@@ -20,15 +20,22 @@ Aplikace se nainstaluje do `/Applications/Gaze Grab.app`. V **Rustletu → Gaze 
 
 Ve výchozím zkušebním režimu se neposílají události myši. Bílý kříž v náhledu ukazuje polohu virtuálního kurzoru.
 
-- **Pohyb:** poloha pravé dlaně se zrcadleně mapuje na hlavní monitor a vyhlazuje. Středních 70 % obrazu pokrývá monitor; levá ruka sama kurzor nepřebírá. Po získání pravé ruky se čeká 300 ms na stabilní sledování.
+- **Pohyb:** relativní pohyb pravé dlaně posouvá kurzor z aktuálního místa na hlavním monitoru jako trackpad. Ruku nech v přirozené poloze a hýbej jen v malém prostoru. Pomalý pohyb je přesný, rychlý má větší dosah díky akceleraci. Citlivost upravuje **Rychlost kurzoru**. Klidová poloha kurzor neposouvá a zachycení ruky po výpadku jej nepřemístí. Po získání pravé ruky se čeká 300 ms na stabilní sledování.
 - **Klik:** natáhni jen ukazovák, ostatní tři prsty ohni. Po 220 ms se klik připraví. Krátce zatlač ukazovák ke kameře: dostatečné zkrácení jeho projekce vůči šířce dlaně po alespoň 60 ms vyvolá jeden klik. Další vyžaduje znovu natažený ukazovák a uplynutí prodlevy 700 ms. Posuvník **Citlivost kliku** mění požadované zkrácení (vyšší hodnota = menší nutná změna).
+- **Alternativní klik:** v nabídce **Klik** nebo v průvodci vyber **Spojení palce a ukazováku**. Oddal špičky, počkej na Připraveno, spoj je a zase oddal. Tato volba nevyžaduje odhad pohybu do hloubky.
 - **Scroll jednou rukou:** zvedni pravý ukazovák a prostředník, prsteník a malík ohni. Po potvrzení pózy 180 ms pohybuj prsty nahoru/dolů. Kurzor během scrollování stojí.
 - **Scroll oběma rukama:** vyber druhou volbu v seznamu **Scroll**. Levou spoj palec, ukazovák a prostředník a drž potvrzené sevření. Pravou s nataženým ukazovákem pohybuj nahoru/dolů. Po puštění levé se pravá vrací k pohybu kurzoru.
 - **Systémová myš:** zapni kameru a přepínač **Ovládat systémový kurzor**. Povol aplikaci v macOS → Soukromí a zabezpečení → **Zpřístupnění** a přepínač zapni znovu. Ovládání začíná po 2 sekundách. **Esc**, vypnutí kamery, zavření okna, uspání nebo chybějící výsledky jej vypnou. Přepínač se po spuštění aplikace nikdy sám nezapne.
 
 **Klik je experimentální odhad z 2D kamery, nikoli měření hloubky.** Kamera může zaměnit pohyb ke kameře za ohnutí prstu nebo natočení ruky. Začni zkušebním režimem a uprav citlivost podle své polohy a světla. Systémový drag-and-drop tříprstým sevřením ještě zapojený není.
 
-Nejasná strana ruky nebo dvě detekce označené stejnou stranou danou stranu vyřadí. Výpadek potřebných kloubů, skok polohy nebo časová mezera ruší připravený klik; ruka se musí znovu potvrdit. Při scrollování se klik nevyhodnocuje. Obě ruce lze sledovat současně a jejich tříprstá gesta jsou nezávislá. Volba scrollu, citlivost kliku a práh sevření se ukládají lokálně.
+Nejasná strana ruky nebo dvě detekce označené stejnou stranou danou stranu vyřadí. Výpadek potřebných kloubů, skok polohy nebo časová mezera ruší připravený klik; ruka se musí znovu potvrdit. Při scrollování se klik nevyhodnocuje. Obě ruce lze sledovat současně a jejich tříprstá gesta jsou nezávislá. Volba scrollu, způsob kliku, rychlost kurzoru, citlivost kliku a práh sevření se ukládají lokálně.
+
+## Průvodce gesty
+
+Tlačítko **Naučit se gesta…** v diagnostice otevře pět kroků s živým náhledem: rozpoznání pravé ruky, malý relativní pohyb, tři kliky, scrollování a společné použití obou rukou. Průvodce používá stejný detektor jako běžné ovládání, počítá skutečné události a ukazuje přípravu i průběh kliku. Tlačítko Další gesto se zpřístupní po úspěchu; každý krok lze také přeskočit nebo zopakovat tlačítkem Zpět. V kroku kliku lze upravit citlivost nebo přepnout na spojení dvou prstů.
+
+Otevření průvodce vypíná systémové ovládání. Cvičný kurzor a kliky zůstávají v náhledu, takže pokusy neklikají do jiných aplikací. Po zavření průvodce se ovládání samo nezapne. Kamera má stále vlastní vypínač. Průvodce se nabídne automaticky při prvním běžném spuštění a lze jej kdykoli znovu otevřít tlačítkem.
 
 ## Diagnostika
 
@@ -62,7 +69,7 @@ cargo run -p gaze-grab -- --vision-probe
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Testy ověřují nezávislost obou rukou při změně pořadí detekcí, odmítnutí nejasné strany, přípravu/potvrzení/opakování kliku, scroll bez kliku a oba způsoby scrollování, otevření před uchopením, rozlišení dvou/tří prstů, potvrzení a hysterezi, rušení při ztrátě ruky/skoku/změně času, nezávislost vzdáleností na měřítku a poměru stran a odmítnutí mrknutí/chybějících zornic. `--vision-probe` spustí skutečné Vision requesty nad prázdným lokálním snímkem bez použití kamery a ověří, že nevymýšlejí ruku ani obličej.
+Testy ověřují relativní pohyb bez počátečního skoku a jeho akceleraci, postupné zatlačení přes mezilehlé polohy, klik vůči délce konkrétního ukazováku, alternativní pinch a opětovné odjištění, nezávislost obou rukou při změně pořadí detekcí, odmítnutí nejasné strany, přípravu/potvrzení/opakování kliku, scroll bez kliku a oba způsoby scrollování, otevření před uchopením, rozlišení dvou/tří prstů, potvrzení a hysterezi, rušení při ztrátě ruky/skoku/změně času, nezávislost vzdáleností na měřítku a poměru stran a odmítnutí mrknutí/chybějících zornic. `--vision-probe` spustí skutečné Vision requesty nad prázdným lokálním snímkem bez použití kamery a ověří, že nevymýšlejí ruku ani obličej.
 
 ## Použitá nativní API
 

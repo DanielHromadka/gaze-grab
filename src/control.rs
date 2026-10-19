@@ -17,6 +17,13 @@ pub struct Input {
     scroll_clutch: bool,
     #[serde(default = "sensitivity")]
     sensitivity: f64,
+    #[serde(default)]
+    click_method: String,
+    #[serde(default = "pointer_gain")]
+    pointer_gain: f64,
+}
+fn pointer_gain() -> f64 {
+    4.
 }
 fn sensitivity() -> f64 {
     0.32
@@ -59,9 +66,13 @@ impl Engine {
             time,
             right.as_deref(),
             aspect,
-            input.scroll_clutch,
             left_result.holding && left_result.state == "held",
-            input.sensitivity,
+            MotionSettings {
+                clutch_mode: input.scroll_clutch,
+                sensitivity: input.sensitivity,
+                pinch_method: input.click_method == "pinch",
+                pointer_gain: input.pointer_gain,
+            },
         );
         let mut result = serde_json::to_value(&right_result).unwrap();
         result["left"] = serde_json::to_value(left_result).unwrap();
@@ -70,17 +81,30 @@ impl Engine {
         result
     }
 }
+struct MotionSettings {
+    clutch_mode: bool,
+    sensitivity: f64,
+    pinch_method: bool,
+    pointer_gain: f64,
+}
+impl Default for MotionSettings {
+    fn default() -> Self {
+        Self {
+            clutch_mode: false,
+            sensitivity: 0.32,
+            pinch_method: false,
+            pointer_gain: 4.,
+        }
+    }
+}
 #[derive(Default)]
 struct Motion {
     last: Option<f64>,
     center: Option<[f64; 2]>,
     stable_since: Option<f64>,
     pointer: Option<[f64; 2]>,
-    extended_since: Option<f64>,
-    baseline: f64,
-    armed: bool,
-    cooldown: f64,
-    push_since: Option<f64>,
+    motion_anchor: Option<[f64; 2]>,
+    click: crate::click::ClickDetector,
     scroll_y: Option<f64>,
     scrolling_since: Option<f64>,
 }
@@ -104,17 +128,19 @@ impl Motion {
         now: f64,
         points: Option<&[Point]>,
         aspect: f64,
-        clutch_mode: bool,
         left_held: bool,
-        sensitivity: f64,
+        settings: MotionSettings,
     ) -> Value {
+        let MotionSettings {
+            clutch_mode,
+            sensitivity,
+            pinch_method,
+            pointer_gain,
+        } = settings;
         let lost = || json!({"mode":"lost","reason":"Pravá ruka chybí nebo nemá spolehlivé body","click":false,"scroll":0});
-        let Some(p) = points.filter(|p| {
-            p.len() == 21
-                && [0, 5, 6, 8, 9, 10, 12, 13, 16, 17, 20]
-                    .iter()
-                    .all(|&i| valid(p[i]))
-        }) else {
+        let Some(p) =
+            points.filter(|p| p.len() == 21 && [0, 5, 8, 9, 17].iter().all(|&i| valid(p[i])))
+        else {
             self.reset();
             return lost();
         };
@@ -149,16 +175,17 @@ impl Motion {
         let middle = extension(9, 12);
         let ring = extension(13, 16);
         let little = extension(17, 20);
-        let two_fingers = index > 0.95 && middle > 0.95 && ring < 0.85 && little < 0.85;
+        let fingers_visible = [12, 16, 20].iter().all(|&i| valid(p[i]));
+        let two_fingers =
+            fingers_visible && index > 0.95 && middle > 0.95 && ring < 1.05 && little < 1.05;
         let scroll_pose = if clutch_mode {
             left_held && index > 0.65
         } else {
             two_fingers
         };
         if scroll_pose {
-            self.armed = false;
-            self.push_since = None;
-            self.extended_since = None;
+            self.motion_anchor = Some(center);
+            self.click = Default::default();
             let since = *self.scrolling_since.get_or_insert(now);
             let y = (p[8].y + p[12].y) / 2.;
             let delta = if now - since >= 0.18 {
@@ -172,54 +199,58 @@ impl Motion {
         }
         self.scroll_y = None;
         self.scrolling_since = None;
-        // Restrict click to a single pointing index. Shortening relative to its
-        // recent extended pose is a monocular push proxy, not a depth estimate.
-        let pointing = middle < 0.85 && ring < 0.85 && little < 0.85;
+        let pointing = fingers_visible && middle < 1.05 && ring < 1.05 && little < 1.05;
         let sensitivity = if sensitivity.is_finite() {
             sensitivity.clamp(0.2, 0.55)
         } else {
             0.32
         };
-        let mut click = false;
-        if pointing && index > 1.05 {
-            self.push_since = None;
-            let since = *self.extended_since.get_or_insert(now);
-            if now - since >= 0.22 && now >= self.cooldown {
-                self.armed = true;
-                self.baseline = index;
-            }
+        let pinch = if valid(p[4]) {
+            Some(dist(p[4], p[8], aspect) / scale)
         } else {
-            self.extended_since = None;
-            if pointing && self.armed && index < self.baseline * (1. - sensitivity) && index > 0.3 {
-                let since = *self.push_since.get_or_insert(now);
-                if now - since >= 0.06 {
-                    click = true;
-                    self.cooldown = now + 0.7;
-                    self.armed = false;
-                    self.push_since = None;
-                }
-            } else {
-                self.armed = false;
-                self.push_since = None;
-            }
+            None
+        };
+        let click = self
+            .click
+            .update(now, index, pointing, pinch, sensitivity, pinch_method);
+        // A local hand movement drives relative cursor velocity, like a trackpad.
+        // Reacquisition establishes a new anchor without warping the system cursor.
+        let anchor = self.motion_anchor.unwrap_or(center);
+        let dx = anchor[0] - center[0];
+        let dy = anchor[1] - center[1];
+        let travel = dx.hypot(dy);
+        let gain = if pointer_gain.is_finite() {
+            pointer_gain.clamp(1., 8.)
+        } else {
+            4.
+        };
+        let acceleration = 1. + (travel / dt.max(0.01) / 0.5).clamp(0., 1.5);
+        let mut delta = [0., 0.];
+        if travel >= 0.0015 {
+            delta = [
+                (dx * gain * acceleration).clamp(-0.18, 0.18),
+                (dy * gain * acceleration).clamp(-0.18, 0.18),
+            ];
+            self.motion_anchor = Some(center);
+        } else if self.motion_anchor.is_none() {
+            self.motion_anchor = Some(center);
         }
-        if !pointing {
-            self.armed = false;
-            self.push_since = None;
+        if click.stage == "pressing" || click.click {
+            delta = [0., 0.];
+            self.motion_anchor = Some(center);
         }
-        let target = [
-            ((1. - center[0] - 0.15) / 0.7).clamp(0., 1.),
-            ((1. - center[1] - 0.15) / 0.7).clamp(0., 1.),
+        let previous = self.pointer.unwrap_or([0.5, 0.5]);
+        let pointer = [
+            (previous[0] + delta[0]).clamp(0., 1.),
+            (previous[1] + delta[1]).clamp(0., 1.),
         ];
-        let alpha = 1. - (-dt.clamp(0., 0.25) / 0.07).exp();
-        let pointer = self.pointer.map_or(target, |previous| {
-            [
-                previous[0] + alpha * (target[0] - previous[0]),
-                previous[1] + alpha * (target[1] - previous[1]),
-            ]
-        });
         self.pointer = Some(pointer);
-        json!({"mode":"pointer","reason":if click {"KLIK · zkrácení ukazováku"} else if self.armed {"Klik připraven · zatlač ukazovák ke kameře"} else {"Pravá dlaň řídí kurzor · pro klik natáhni jen ukazovák"},"pointer":pointer,"click":click,"scroll":0,"extension":index,"armed":self.armed,"left_clutch":left_held})
+        let reason = if !pinch_method && !fingers_visible {
+            "Klik čeká: ukaž prostředník, prsteník a malík"
+        } else {
+            click.reason
+        };
+        json!({"mode":"pointer","reason":reason,"pointer":pointer,"delta":delta,"click":click.click,"scroll":0,"extension":index,"armed":click.armed,"click_feedback":click,"pinch":pinch,"left_clutch":left_held})
     }
 }
 #[cfg(test)]
@@ -247,7 +278,7 @@ mod tests {
         p
     }
     fn step(m: &mut Motion, t: f64, p: Option<&[Point]>) -> Value {
-        m.update(t, p, 1., false, false, 0.32)
+        m.update(t, p, 1., false, MotionSettings::default())
     }
     fn prime(m: &mut Motion, p: &[Point]) {
         for t in [0., 0.1, 0.2, 0.31, 0.42, 0.54] {
@@ -351,16 +382,68 @@ mod tests {
         assert_eq!(output["right"]["holding"], false);
     }
     #[test]
+    fn relative_motion_has_no_initial_warp_and_accelerates_small_movements() {
+        let mut slow = Motion::default();
+        let mut fast = Motion::default();
+        let p = pose(1.4, 0.3);
+        prime(&mut slow, &p);
+        prime(&mut fast, &p);
+        let initial = step(&mut slow, 0.64, Some(&p));
+        assert_eq!(initial["delta"], json!([0., 0.]));
+        let shifted = |amount: f64| {
+            let mut q = p.clone();
+            for point in &mut q {
+                point.x -= amount;
+            }
+            q
+        };
+        let small = step(&mut slow, 0.74, Some(&shifted(0.005)));
+        let quick = step(&mut fast, 0.64, Some(&shifted(0.04)));
+        let small_gain = small["delta"][0].as_f64().unwrap() / 0.005;
+        let quick_gain = quick["delta"][0].as_f64().unwrap() / 0.04;
+        assert!(quick_gain > small_gain);
+        step(&mut fast, 0.7, None);
+        assert_eq!(
+            step(&mut fast, 0.8, Some(&shifted(0.08)))["mode"],
+            "acquiring"
+        );
+        for t in [0.9, 1., 1.11] {
+            step(&mut fast, t, Some(&shifted(0.08)));
+        }
+        assert_eq!(
+            step(&mut fast, 1.2, Some(&shifted(0.08)))["delta"],
+            json!([0., 0.])
+        );
+    }
+    #[test]
     fn left_clutch_switches_right_index_into_scroll() {
         let mut m = Motion::default();
         let p = pose(1.4, 0.3);
         prime(&mut m, &p);
         assert_eq!(
-            m.update(0.65, Some(&p), 1., true, true, 0.32)["mode"],
+            m.update(
+                0.65,
+                Some(&p),
+                1.,
+                true,
+                MotionSettings {
+                    clutch_mode: true,
+                    ..Default::default()
+                }
+            )["mode"],
             "scroll"
         );
         assert_eq!(
-            m.update(0.75, Some(&p), 1., true, false, 0.32)["mode"],
+            m.update(
+                0.75,
+                Some(&p),
+                1.,
+                false,
+                MotionSettings {
+                    clutch_mode: true,
+                    ..Default::default()
+                }
+            )["mode"],
             "pointer"
         );
     }

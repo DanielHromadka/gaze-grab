@@ -28,4 +28,5 @@ fn main() {
         resource.trim()
     );
     println!("cargo:rerun-if-changed=native/gaze.m");
+    println!("cargo:rerun-if-changed=native/guide.inc");
 }

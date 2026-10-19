@@ -29,4 +29,5 @@ fn main() {
     );
     println!("cargo:rerun-if-changed=native/gaze.m");
     println!("cargo:rerun-if-changed=native/guide.inc");
+    println!("cargo:rerun-if-changed=native/learn.inc");
 }

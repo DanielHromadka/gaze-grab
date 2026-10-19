@@ -4,7 +4,7 @@
     NSTextField *label=[NSTextField wrappingLabelWithString:text];label.frame=rect;[self.guide.contentView addSubview:label];return label;
 }
 - (void)showGuide:(id)sender {
-    (void)sender;[self disableControl];
+    (void)sender;[self.learning close];[self disableControl];
     if(!self.guide) {
         self.guide=[[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,660,550) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
         self.guide.title=@"Gaze Grab · Naučit se gesta";self.guide.releasedWhenClosed=NO;self.guide.delegate=self;self.guide.level=NSFloatingWindowLevel;self.guide.hidesOnDeactivate=NO;

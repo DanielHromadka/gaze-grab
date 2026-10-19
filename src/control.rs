@@ -21,6 +21,11 @@ pub struct Input {
     click_method: String,
     #[serde(default = "pointer_gain")]
     pointer_gain: f64,
+    #[serde(default = "smoothness")]
+    smoothing: f64,
+}
+fn smoothness() -> f64 {
+    0.65
 }
 fn pointer_gain() -> f64 {
     4.
@@ -33,8 +38,18 @@ pub struct Engine {
     right: Tracker,
     left: Tracker,
     motion: Motion,
+    learned: crate::learned::Library,
 }
 impl Engine {
+    pub fn reset_motion(&mut self) {
+        self.right = Tracker::default();
+        self.left = Tracker::default();
+        self.motion = Motion::default();
+        self.learned.rearm();
+    }
+    pub fn command(&mut self, c: Value) -> Value {
+        self.learned.command(c)
+    }
     pub fn update(&mut self, mut input: Input) -> Value {
         // Ambiguous chirality is never assigned by screen position. Duplicate labels
         // suppress that side, rather than transferring control to the other hand.
@@ -56,13 +71,16 @@ impl Engine {
             time,
             width: input.frame.width,
             height: input.frame.height,
-            hand: left,
+            hand: left.clone(),
             face: None,
             threshold: input.frame.threshold,
         });
         input.frame.hand = right.clone();
         let right_result = self.right.update(input.frame);
-        let control = self.motion.update(
+        let learned = self
+            .learned
+            .update(time, right.as_deref(), left.as_deref(), aspect);
+        let mut control = self.motion.update(
             time,
             right.as_deref(),
             aspect,
@@ -72,16 +90,26 @@ impl Engine {
                 sensitivity: input.sensitivity,
                 pinch_method: input.click_method == "pinch",
                 pointer_gain: input.pointer_gain,
+                smoothing: input.smoothing,
             },
         );
+        if learned["training"] == true
+            || (learned.get("match").is_some() && learned["action"] != "none")
+        {
+            control["click"] = json!(false);
+            control["scroll"] = json!(0.);
+            control["delta"] = json!([0., 0.]);
+        }
         let mut result = serde_json::to_value(&right_result).unwrap();
         result["left"] = serde_json::to_value(left_result).unwrap();
         result["right"] = serde_json::to_value(right_result).unwrap();
         result["control"] = control;
+        result["learned"] = learned;
         result
     }
 }
 struct MotionSettings {
+    smoothing: f64,
     clutch_mode: bool,
     sensitivity: f64,
     pinch_method: bool,
@@ -90,6 +118,7 @@ struct MotionSettings {
 impl Default for MotionSettings {
     fn default() -> Self {
         Self {
+            smoothing: 0.65,
             clutch_mode: false,
             sensitivity: 0.32,
             pinch_method: false,
@@ -104,6 +133,7 @@ struct Motion {
     stable_since: Option<f64>,
     pointer: Option<[f64; 2]>,
     motion_anchor: Option<[f64; 2]>,
+    filtered: Option<[f64; 2]>,
     click: crate::click::ClickDetector,
     scroll_y: Option<f64>,
     scrolling_since: Option<f64>,
@@ -132,6 +162,7 @@ impl Motion {
         settings: MotionSettings,
     ) -> Value {
         let MotionSettings {
+            smoothing,
             clutch_mode,
             sensitivity,
             pinch_method,
@@ -184,6 +215,7 @@ impl Motion {
             two_fingers
         };
         if scroll_pose {
+            self.filtered = Some(center);
             self.motion_anchor = Some(center);
             self.click = Default::default();
             let since = *self.scrolling_since.get_or_insert(now);
@@ -215,6 +247,21 @@ impl Motion {
             .update(now, index, pointing, pinch, sensitivity, pinch_method);
         // A local hand movement drives relative cursor velocity, like a trackpad.
         // Reacquisition establishes a new anchor without warping the system cursor.
+        let previous_filtered = self.filtered.unwrap_or(center);
+        let smoothing = if smoothing.is_finite() {
+            smoothing.clamp(0., 1.)
+        } else {
+            0.65
+        };
+        let speed = (center[0] - previous_filtered[0]).hypot(center[1] - previous_filtered[1])
+            / dt.max(0.01);
+        let tau = (0.015 + smoothing * 0.12) / (1. + speed * 12.);
+        let alpha = 1. - (-dt.max(0.01) / tau).exp();
+        let center = [
+            previous_filtered[0] + alpha * (center[0] - previous_filtered[0]),
+            previous_filtered[1] + alpha * (center[1] - previous_filtered[1]),
+        ];
+        self.filtered = Some(center);
         let anchor = self.motion_anchor.unwrap_or(center);
         let dx = anchor[0] - center[0];
         let dy = anchor[1] - center[1];
@@ -414,6 +461,35 @@ mod tests {
             step(&mut fast, 1.2, Some(&shifted(0.08)))["delta"],
             json!([0., 0.])
         );
+    }
+    #[test]
+    fn smoothing_reduces_resting_jitter_without_accumulating_a_jump() {
+        let p = pose(1.4, 0.3);
+        let mut raw = Motion::default();
+        let mut smooth = Motion::default();
+        prime(&mut raw, &p);
+        prime(&mut smooth, &p);
+        let mut travel = [0., 0.];
+        for i in 1..=40 {
+            let mut noisy = p.clone();
+            for point in &mut noisy {
+                point.x += if i % 2 == 0 { 0.0025 } else { -0.0025 };
+            }
+            for (index, motion) in [&mut raw, &mut smooth].into_iter().enumerate() {
+                let result = motion.update(
+                    0.54 + i as f64 * 0.08,
+                    Some(&noisy),
+                    1.,
+                    false,
+                    MotionSettings {
+                        smoothing: index as f64,
+                        ..Default::default()
+                    },
+                );
+                travel[index] += result["delta"][0].as_f64().unwrap_or(0.).abs();
+            }
+        }
+        assert!(travel[1] < travel[0] * 0.7, "{travel:?}");
     }
     #[test]
     fn left_clutch_switches_right_index_into_scroll() {

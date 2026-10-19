@@ -1,5 +1,6 @@
 mod click;
 mod control;
+mod learned;
 mod tracking;
 use std::ffi::{c_char, CStr, CString};
 extern "C" {
@@ -40,6 +41,32 @@ pub unsafe extern "C" fn gaze_process(
         .and_then(|s| serde_json::from_str::<control::Input>(s).ok())
         .map(|frame| serde_json::to_value((*tracker).update(frame)).unwrap())
         .unwrap_or_else(|| serde_json::json!({"error":"Neplatný snímek detekce."}));
+    CString::new(result.to_string()).unwrap().into_raw()
+}
+#[no_mangle]
+/// # Safety
+/// tracker must be a live exclusively borrowed gaze_create allocation.
+pub unsafe extern "C" fn gaze_reset(tracker: *mut control::Engine) {
+    if let Some(engine) = tracker.as_mut() {
+        engine.reset_motion();
+    }
+}
+#[no_mangle]
+/// # Safety
+/// tracker must be live and exclusively borrowed; json must be a valid C string.
+pub unsafe extern "C" fn gaze_command(
+    tracker: *mut control::Engine,
+    json: *const c_char,
+) -> *mut c_char {
+    if tracker.is_null() || json.is_null() {
+        return std::ptr::null_mut();
+    }
+    let result = CStr::from_ptr(json)
+        .to_str()
+        .ok()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .map(|c| (*tracker).command(c))
+        .unwrap_or_else(|| serde_json::json!({"ok":false,"message":"Neplatný příkaz"}));
     CString::new(result.to_string()).unwrap().into_raw()
 }
 #[no_mangle]

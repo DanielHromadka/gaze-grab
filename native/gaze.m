@@ -6,6 +6,8 @@
 extern void *gaze_create(void);
 extern char *gaze_process(void *,const char *);
 extern void gaze_destroy(void *);
+extern void gaze_reset(void *);
+extern char *gaze_command(void *,const char *);
 extern void gaze_free(char *);
 static NSDictionary *Evaluate(void *tracker,NSDictionary *frame) {
     NSData *data=[NSJSONSerialization dataWithJSONObject:frame options:0 error:nil];
@@ -13,6 +15,11 @@ static NSDictionary *Evaluate(void *tracker,NSDictionary *frame) {
     char *result=gaze_process(tracker,json.UTF8String); if (!result) return @{};
     NSData *output=[[NSString stringWithUTF8String:result] dataUsingEncoding:NSUTF8StringEncoding]; gaze_free(result);
     return [NSJSONSerialization JSONObjectWithData:output options:0 error:nil] ?: @{};
+}
+static NSDictionary *Command(void *tracker,NSDictionary *command) {
+    NSData *data=[NSJSONSerialization dataWithJSONObject:command options:0 error:nil];NSString *json=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    char *result=gaze_command(tracker,json.UTF8String);if(!result)return @{};
+    NSData *output=[[NSString stringWithUTF8String:result] dataUsingEncoding:NSUTF8StringEncoding];gaze_free(result);return [NSJSONSerialization JSONObjectWithData:output options:0 error:nil] ?: @{};
 }
 static NSDictionary *PointJSON(CGPoint p,float confidence) { return @{@"x":@(p.x),@"y":@(p.y),@"confidence":@(confidence)}; }
 static NSArray *FacePoints(VNFaceLandmarkRegion2D *region,CGRect box,float confidence) {
@@ -148,6 +155,18 @@ static NSArray *JointNames(void) {
 @property(nonatomic) NSInteger guideStep,guideClicks;
 @property(nonatomic) BOOL guidePassed;
 @property(nonatomic) double guideTravel,guideObservedSince;
+@property(nonatomic,strong) NSPanel *learning;
+@property(nonatomic,strong) GGPreview *learnPreview;
+@property(nonatomic,strong) NSTextField *learnName,*learnInstruction,*learnFeedback,*learnStatus;
+@property(nonatomic,strong) NSPopUpButton *learnSaved,*learnAssigned,*learnHands,*learnKind,*learnAction;
+@property(nonatomic,strong) NSButton *learnEnabled,*learnAssign,*learnDelete,*learnBegin,*learnRecord,*learnSave,*learnCancel,*learnCamera;
+@property(nonatomic,strong) NSProgressIndicator *learnProgress;
+@property(nonatomic,strong) NSArray *learnModels;
+@property(nonatomic) BOOL learnDraft,gesturePaused;
+@property(nonatomic) CGPoint pendingCursor;
+@property(nonatomic) double cursorTickTime;
+@property(nonatomic,strong) NSTimer *cursorTimer;
+@property(atomic) double smoothing;
 @property(atomic) BOOL pinchClick;
 @property(atomic) double pointerGain;
 @property(atomic) BOOL controlEnabled,scrollClutch;
@@ -181,6 +200,7 @@ static NSArray *JointNames(void) {
     id saved=[NSUserDefaults.standardUserDefaults objectForKey:@"pinchThreshold"];
     self.threshold=[saved isKindOfClass:NSNumber.class] && isfinite([saved doubleValue]) ? MAX(0.15,MIN(0.65,[saved doubleValue])) : 0.35;
     self.clickSensitivity=[NSUserDefaults.standardUserDefaults objectForKey:@"clickSensitivity"] ? [NSUserDefaults.standardUserDefaults doubleForKey:@"clickSensitivity"] : 0.32;
+    self.smoothing=[NSUserDefaults.standardUserDefaults objectForKey:@"smoothing"] ? [NSUserDefaults.standardUserDefaults doubleForKey:@"smoothing"] : 0.65;
     self.pinchClick=[NSUserDefaults.standardUserDefaults boolForKey:@"pinchClick"];
     self.pointerGain=[NSUserDefaults.standardUserDefaults objectForKey:@"pointerGain"] ? [NSUserDefaults.standardUserDefaults doubleForKey:@"pointerGain"] : 4.;
     self.scrollClutch=[NSUserDefaults.standardUserDefaults boolForKey:@"scrollClutch"];
@@ -195,6 +215,7 @@ static NSArray *JointNames(void) {
     self.escapeGlobal=[NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^(NSEvent *event){if(event.keyCode==53)[weakSelf disableControl];}];
     [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(suspend:) name:NSWorkspaceSessionDidResignActiveNotification object:nil];
     [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(suspend:) name:NSWorkspaceWillSleepNotification object:nil];
+    self.cursorTimer=[NSTimer timerWithTimeInterval:1./60. target:self selector:@selector(tickCursor:) userInfo:nil repeats:YES];[NSRunLoop.mainRunLoop addTimer:self.cursorTimer forMode:NSRunLoopCommonModes];
     self.health=[NSTimer scheduledTimerWithTimeInterval:0.25 target:self selector:@selector(checkHealth:) userInfo:nil repeats:YES];
     if (![NSProcessInfo.processInfo.arguments containsObject:@"--background"]) {[self show:nil];if(![NSUserDefaults.standardUserDefaults boolForKey:@"gestureGuideSeen"])[self showGuide:nil];}
 }
@@ -227,7 +248,8 @@ static NSArray *JointNames(void) {
     [self.scrollPicker selectItemAtIndex:self.scrollClutch ? 1 : 0];self.scrollPicker.target=self;self.scrollPicker.action=@selector(changeScroll:);self.scrollPicker.accessibilityLabel=@"Gesto pro scrollování";[self.window.contentView addSubview:self.scrollPicker];
     [self label:@"Citlivost kliku:" frame:NSMakeRect(430,48,105,24)];
     NSSlider *click=[NSSlider sliderWithValue:0.75-self.clickSensitivity minValue:0.20 maxValue:0.55 target:self action:@selector(changeClick:)];click.frame=NSMakeRect(535,46,125,26);click.accessibilityLabel=@"Citlivost kliku směrem ke kameře";[self.window.contentView addSubview:click];
-    [self label:@"Pohyb stačí malý. Pomalý je přesný, rychlý přesune kurzor dál. Gesta vysvětlí průvodce." frame:NSMakeRect(16,10,648,26)].font=[NSFont systemFontOfSize:11];
+    NSButton *custom=[NSButton buttonWithTitle:@"Vlastní gesta…" target:self action:@selector(showLearning:)];custom.frame=NSMakeRect(16,10,180,28);[self.window.contentView addSubview:custom];
+    [self label:@"Vyhlazení kurzoru:" frame:NSMakeRect(230,12,140,24)];NSSlider *smooth=[NSSlider sliderWithValue:self.smoothing minValue:0 maxValue:1 target:self action:@selector(changeSmoothing:)];smooth.frame=NSMakeRect(375,10,210,26);smooth.accessibilityLabel=@"Vyhlazení kurzoru";smooth.toolTip=@"Vpravo klidnější pohyb, vlevo rychlejší odezva";[self.window.contentView addSubview:smooth];
     NSButton *guide=[NSButton buttonWithTitle:@"Naučit se gesta…" target:self action:@selector(showGuide:)];guide.frame=NSMakeRect(330,618,175,28);[self.window.contentView addSubview:guide];
     // Make room for the click method and relative movement controls below.
     for(NSView *view in self.window.contentView.subviews){NSRect f=view.frame;f.origin.y+=50;view.frame=f;}
@@ -254,7 +276,7 @@ static NSArray *JointNames(void) {
 - (void)refreshMenu {
     NSMenu *menu=[NSMenu new];
     NSMenuItem *heading=[[NSMenuItem alloc] initWithTitle:self.running ? @"Gaze Grab · Kamera běží" : @"Gaze Grab · Kamera vypnutá" action:nil keyEquivalent:@""];[menu addItem:heading];
-    for (NSArray *entry in @[@[@"Diagnostika…",@"show:"],@[self.requested ? @"Vypnout kameru" : @"Zapnout kameru",@"startStop:"],@[self.controlEnabled ? @"Vypnout ovládání kurzoru" : @"Zapnout ovládání kurzoru…",@"toggleControl:"],@[@"Vynulovat gesta",@"reset:"],@[@"Povolení kamery v macOS…",@"privacy:"]]) {
+    for (NSArray *entry in @[@[@"Diagnostika…",@"show:"],@[self.requested ? @"Vypnout kameru" : @"Zapnout kameru",@"startStop:"],@[self.controlEnabled ? @"Vypnout ovládání kurzoru" : @"Zapnout ovládání kurzoru…",@"toggleControl:"],@[@"Vlastní gesta…",@"showLearning:"],@[@"Vynulovat gesta",@"reset:"],@[@"Povolení kamery v macOS…",@"privacy:"]]) {
         NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:entry[0] action:NSSelectorFromString(entry[1]) keyEquivalent:@""];item.target=self;[menu addItem:item];
     }
     [menu addItem:NSMenuItem.separatorItem];NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@"Ukončit Gaze Grab" action:@selector(quit:) keyEquivalent:@""];quit.target=self;[menu addItem:quit];self.status.menu=menu;
@@ -266,7 +288,7 @@ static NSArray *JointNames(void) {
     [self reset:nil];
 }
 - (void)reset:(id)sender {
-    (void)sender;dispatch_async(self.visionQueue, ^{gaze_destroy(self.tracker);self.tracker=gaze_create();});
+    (void)sender;self.pendingCursor=CGPointZero;dispatch_async(self.visionQueue, ^{gaze_reset(self.tracker);});
     [self.events removeAllObjects];self.eventsLabel.stringValue=@"Gesta vynulována. Ukaž otevřenou ruku.";
 }
 - (void)changeScroll:(NSPopUpButton *)sender {self.scrollClutch=sender.indexOfSelectedItem==1;[NSUserDefaults.standardUserDefaults setBool:self.scrollClutch forKey:@"scrollClutch"];[self reset:nil];}
@@ -278,11 +300,13 @@ static NSArray *JointNames(void) {
     if(self.guide.visible)[self configureGuideStep];else [self reset:nil];
 }
 #include "guide.inc"
+#include "learn.inc"
+- (void)changeSmoothing:(NSSlider *)sender {self.smoothing=sender.doubleValue;[NSUserDefaults.standardUserDefaults setDouble:self.smoothing forKey:@"smoothing"];}
 - (void)disableControl {
-    self.controlEnabled=NO;self.controlButton.state=NSControlStateValueOff;self.controlStatus.stringValue=@"Zkušební režim · gesta se jen vyhodnocují.";[self refreshMenu];
+    self.pendingCursor=CGPointZero;self.gesturePaused=NO;self.controlEnabled=NO;self.controlButton.state=NSControlStateValueOff;self.controlStatus.stringValue=@"Zkušební režim · gesta se jen vyhodnocují.";[self refreshMenu];
 }
 - (void)toggleControl:(id)sender {
-    (void)sender;if(self.guide.visible){[self disableControl];[self.guide makeKeyAndOrderFront:nil];return;}if(self.controlEnabled){[self disableControl];return;}
+    (void)sender;if(self.learning.visible){[self disableControl];[self.learning makeKeyAndOrderFront:nil];return;}if(self.guide.visible){[self disableControl];[self.guide makeKeyAndOrderFront:nil];return;}if(self.controlEnabled){[self disableControl];return;}
     if(!self.running){[self statusText:@"Nejprve zapni kameru, pak povol ovládání kurzoru."];self.controlButton.state=NSControlStateValueOff;return;}
     if(!AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)@{(__bridge NSString *)kAXTrustedCheckOptionPrompt:@YES})) {
         self.controlButton.state=NSControlStateValueOff;self.controlStatus.stringValue=@"Povol Gaze Grab v macOS → Soukromí a zabezpečení → Zpřístupnění, pak přepínač zapni znovu.";
@@ -296,30 +320,35 @@ static NSArray *JointNames(void) {
     self.controlDisplay=CGMainDisplayID();[self reset:nil];[self refreshMenu];
 }
 - (void)applyControl:(NSDictionary *)control frameTime:(double)time {
-    if(!self.controlEnabled || self.guide.visible)return;
+    if(!self.controlEnabled || self.guide.visible || self.learning.visible || self.gesturePaused)return;
     double now=NSProcessInfo.processInfo.systemUptime;
     if(!AXIsProcessTrusted()){[self disableControl];return;}
     if(now<self.controlsAfter){self.controlStatus.stringValue=@"Ovládání začne za 2 s · připrav pravou ruku. Esc vypne.";return;}
     if(now-time>0.25)return;
     self.controlStatus.stringValue=[NSString stringWithFormat:@"OVLÁDÁNÍ · hlavní monitor · %@ · Esc vypne",control[@"reason"] ?: @"čekám"];
     NSArray *movement=control[@"delta"];
-    if([movement isKindOfClass:NSArray.class] && movement.count==2) {
-        CGRect screen=CGDisplayBounds(self.controlDisplay);double x=[movement[0] doubleValue],y=[movement[1] doubleValue];
-        if(isfinite(x)&&isfinite(y) && (x!=0 || y!=0)) {
-            CGEventRef current=CGEventCreate(NULL);
-            if(current){CGPoint old=CGEventGetLocation(current);CFRelease(current);
-                CGPoint position=CGPointMake(MAX(CGRectGetMinX(screen),MIN(CGRectGetMaxX(screen)-1,old.x+x*screen.size.width)),MAX(CGRectGetMinY(screen),MIN(CGRectGetMaxY(screen)-1,old.y+y*screen.size.height)));
-                CGEventRef move=CGEventCreateMouseEvent(NULL,kCGEventMouseMoved,position,kCGMouseButtonLeft);if(move){CGEventPost(kCGHIDEventTap,move);CFRelease(move);}
-            }
-        }
-    }
+    if([movement isKindOfClass:NSArray.class] && movement.count==2 && [control[@"mode"] isEqual:@"pointer"]) {
+        double x=[movement[0] doubleValue],y=[movement[1] doubleValue];
+        if(isfinite(x)&&isfinite(y))self.pendingCursor=CGPointMake(MAX(-0.3,MIN(0.3,self.pendingCursor.x+x)),MAX(-0.3,MIN(0.3,self.pendingCursor.y+y)));
+    }else self.pendingCursor=CGPointZero;
     if([control[@"click"] boolValue]) {
+        self.pendingCursor=CGPointZero;
         CGEventRef current=CGEventCreate(NULL);if(current){CGPoint position=CGEventGetLocation(current);CFRelease(current);
             for(int i=0;i<2;i++){CGEventRef click=CGEventCreateMouseEvent(NULL,i==0 ? kCGEventLeftMouseDown : kCGEventLeftMouseUp,position,kCGMouseButtonLeft);if(click){CGEventSetIntegerValueField(click,kCGMouseEventClickState,1);CGEventPost(kCGHIDEventTap,click);CFRelease(click);}}
         }
     }
     double delta=[control[@"scroll"] doubleValue];
     if(isfinite(delta) && fabs(delta)>=1){CGEventRef scroll=CGEventCreateScrollWheelEvent(NULL,kCGScrollEventUnitPixel,1,(int32_t)round(delta));if(scroll){CGEventPost(kCGHIDEventTap,scroll);CFRelease(scroll);}}
+}
+- (void)tickCursor:(NSTimer *)timer {
+    (void)timer;double now=NSProcessInfo.processInfo.systemUptime;double dt=self.cursorTickTime ? MIN(0.05,now-self.cursorTickTime) : 1./60.;self.cursorTickTime=now;
+    if(!self.controlEnabled || self.gesturePaused || self.guide.visible || self.learning.visible || now-self.lastResultTime>0.25 || !AXIsProcessTrusted()){self.pendingCursor=CGPointZero;return;}
+    if(fabs(self.pendingCursor.x)+fabs(self.pendingCursor.y)<0.00001){self.pendingCursor=CGPointZero;return;}
+    double alpha=1.-exp(-dt/(0.018+MAX(0,MIN(1,self.smoothing))*0.035));
+    CGPoint step=CGPointMake(self.pendingCursor.x*alpha,self.pendingCursor.y*alpha);self.pendingCursor=CGPointMake(self.pendingCursor.x-step.x,self.pendingCursor.y-step.y);
+    CGEventRef current=CGEventCreate(NULL);if(!current)return;CGPoint old=CGEventGetLocation(current);CFRelease(current);CGRect screen=CGDisplayBounds(self.controlDisplay);
+    CGPoint position=CGPointMake(MAX(CGRectGetMinX(screen),MIN(CGRectGetMaxX(screen)-1,old.x+step.x*screen.size.width)),MAX(CGRectGetMinY(screen),MIN(CGRectGetMaxY(screen)-1,old.y+step.y*screen.size.height)));
+    CGEventRef move=CGEventCreateMouseEvent(NULL,kCGEventMouseMoved,position,kCGMouseButtonLeft);if(move){CGEventPost(kCGHIDEventTap,move);CFRelease(move);}
 }
 - (void)privacy:(id)sender {(void)sender;[NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Camera"]];}
 - (void)startStop:(id)sender {
@@ -362,7 +391,7 @@ static NSArray *JointNames(void) {
             self.preview.video.session=session;self.preview.video.hidden=!self.running;
             if(self.preview.video.connection.isVideoMirroringSupported){self.preview.video.connection.automaticallyAdjustsVideoMirroring=NO;self.preview.video.connection.videoMirrored=YES;}
             [self statusText:self.running ? @"Kamera běží · ukaž jednu nebo obě ruce a obě oči. Náhled je zrcadlený." : @"Kamera neposkytuje obraz. Zkus ji znovu spustit."];
-            [self attachGuideCamera];[self refreshMenu];
+            [self attachGuideCamera];[self attachLearningCamera];[self refreshMenu];
         });
     });
 }
@@ -374,6 +403,7 @@ static NSArray *JointNames(void) {
     self.preview.video.session=nil;self.preview.video.hidden=YES;self.preview.overlay.landmarksFrame=nil;self.preview.overlay.evaluation=nil;self.preview.overlay.needsDisplay=YES;
     self.eyePlot.signal=nil;self.eyePlot.needsDisplay=YES;self.gesture.stringValue=@"Kamera vypnutá";
     self.handMetrics.stringValue=@"Uchopení zrušeno.\nPro další pokus zapni kameru.";self.eyeMetrics.stringValue=@"Obličej: —\nZornice: —\nOční signál: —";self.performance.stringValue=@"FPS: —   Analýza: —";
+    self.learnPreview.video.session=nil;self.learnPreview.video.hidden=YES;self.learnPreview.overlay.landmarksFrame=nil;self.learnPreview.overlay.needsDisplay=YES;self.learnDraft=NO;[self setLearningFields:YES];self.learnRecord.enabled=NO;self.learnSave.enabled=NO;self.learnFeedback.stringValue=@"Kamera je vypnutá. Pro další učení ji zapni.";
     self.guidePreview.video.session=nil;self.guidePreview.video.hidden=YES;[self updateGuide:nil evaluation:@{}];
     [self statusText:@"Kamera je vypnutá. Obraz se neukládá ani neodesílá."];
     dispatch_async(self.sessionQueue, ^{
@@ -402,7 +432,7 @@ static NSArray *JointNames(void) {
             NSString *side=hand.chirality==VNChiralityRight ? @"right" : hand.chirality==VNChiralityLeft ? @"left" : @"unknown";
             [observed addObject:@{@"side":side,@"points":points}];
         }
-        frame[@"click_method"]=self.pinchClick ? @"pinch" : @"push";frame[@"pointer_gain"]=@(self.pointerGain);
+        frame[@"smoothing"]=@(self.smoothing);frame[@"click_method"]=self.pinchClick ? @"pinch" : @"push";frame[@"pointer_gain"]=@(self.pointerGain);
         frame[@"hands"]=observed;frame[@"scroll_clutch"]=@(self.scrollClutch);frame[@"sensitivity"]=@(self.clickSensitivity);
         VNFaceObservation *face=faces.count==1 ? faces[0] : nil;VNFaceLandmarks2D *landmarks=face.landmarks;
         if(landmarks){
@@ -429,7 +459,7 @@ static NSArray *JointNames(void) {
     self.gesture.font=[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
     self.gesture.textColor=([right[@"holding"] boolValue] || [left[@"holding"] boolValue]) ? NSColor.systemGreenColor : NSColor.labelColor;
     self.handMetrics.stringValue=[NSString stringWithFormat:@"Ruce: %lu · P %.0f %% / L %.0f %%\n%@\nUkazovák: %@ · %@",(unsigned long)hands,[right[@"hand_confidence"] doubleValue]*100,[left[@"hand_confidence"] doubleValue]*100,control[@"reason"] ?: @"Čekám",[self number:control[@"extension"]],[control[@"armed"] boolValue] ? @"klik připraven" : @"neaktivní"];
-    [self updateGuide:frame evaluation:evaluation];
+    [self updateGuide:frame evaluation:evaluation];[self updateLearning:frame evaluation:evaluation];
     [self applyControl:control frameTime:[frame[@"time"] doubleValue]];
     NSDictionary *signal=[evaluation[@"eye_signal"] isKindOfClass:NSDictionary.class] ? evaluation[@"eye_signal"] : nil;
     self.eyePlot.signal=signal;self.eyePlot.needsDisplay=YES;
@@ -456,11 +486,11 @@ static NSArray *JointNames(void) {
 }
 - (void)runtimeError:(NSNotification *)note {[self fail:[note.userInfo[AVCaptureSessionErrorKey] localizedDescription] ?: @"Kamera byla přerušena." epoch:self.generation];}
 - (void)suspend:(NSNotification *)note {(void)note;[self stop];}
-- (void)windowWillClose:(NSNotification *)note {if(note.object==self.guide){[NSUserDefaults.standardUserDefaults setBool:YES forKey:@"gestureGuideSeen"];self.guidePreview.video.session=nil;return;}[self.guide close];[self stop];}
+- (void)windowWillClose:(NSNotification *)note {if(note.object==self.learning){self.learnPreview.video.session=nil;[self cancelLearning:nil];return;}if(note.object==self.guide){[NSUserDefaults.standardUserDefaults setBool:YES forKey:@"gestureGuideSeen"];self.guidePreview.video.session=nil;return;}[self.guide close];[self.learning close];[self stop];}
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)visible {(void)sender;(void)visible;[self show:nil];return NO;}
 - (void)quit:(id)sender {(void)sender;[NSApp terminate:nil];}
 - (void)applicationWillTerminate:(NSNotification *)note {
-    (void)note;self.requested=NO;self.generation++;[self.health invalidate];
+    (void)note;self.requested=NO;self.generation++;[self.health invalidate];[self.cursorTimer invalidate];
     if(self.escapeLocal)[NSEvent removeMonitor:self.escapeLocal];if(self.escapeGlobal)[NSEvent removeMonitor:self.escapeGlobal];
     [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self];[NSNotificationCenter.defaultCenter removeObserver:self];
     dispatch_sync(self.sessionQueue, ^{

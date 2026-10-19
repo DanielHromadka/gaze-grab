@@ -37,6 +37,24 @@ Tlačítko **Naučit se gesta…** v diagnostice otevře pět kroků s živým n
 
 Otevření průvodce vypíná systémové ovládání. Cvičný kurzor a kliky zůstávají v náhledu, takže pokusy neklikají do jiných aplikací. Po zavření průvodce se ovládání samo nezapne. Kamera má stále vlastní vypínač. Průvodce se nabídne automaticky při prvním běžném spuštění a lze jej kdykoli znovu otevřít tlačítkem.
 
+## Vlastní naučená gesta
+
+V diagnostice nebo v menu otevři **Vlastní gesta…**. Kamera i učení běží lokálně.
+
+1. Zapni kameru, zadej název, vyber **pravou / levou / obě ruce** a typ: **Póza (podržet)** nebo **Pohyb (zopakovat)**. Vyber akci a stiskni **Připravit gesto**.
+2. Stiskni **Nahrát ukázku 1/3**. Po dvousekundovém odpočtu drž pózu nebo za dvě sekundy proveď celé gesto. Všechny potřebné prsty musí zůstat viditelné. Opakuj pro další dvě ukázky; pohyb začínej ze stejné výchozí polohy.
+3. Klikni na **Uložit gesto**. V náhledu zopakuj naučené gesto. Uvidíš jeho jméno při rozpoznání. Před dalším vyvoláním se vrať do neutrální polohy, aby se gesto odjistilo.
+4. Uloženému gestu lze přiřadit **klik, dvojklik, pravé tlačítko, scroll nahoru/dolů, pozastavení/obnovení kurzoru** nebo **jen rozpoznávání**. Při změně akce nebo vypnutí rozpoznávání stiskni **Uložit přiřazení**. Gesta lze smazat a nově naučit.
+5. Zavři okno učení a zapni systémové ovládání, aby se přiřazené akce vykonávaly. Během učení a zkoušení v jeho okně se akce do jiných aplikací neposílají. Naučené gesto s přiřazenou akcí má při rozpoznání přednost před vestavěným klikem a scrollem. Gesto pro pozastavení lze znovu použít k obnovení; Esc celé ovládání vypne.
+
+Jde o učení z několika ukázek, ne o univerzální rozpoznávání libovolných gest. Normalizované body rukou tvoří osobní šablony: póza porovnává tvar prstů, pohyb také dráhu zápěstí pomocí časového zarovnání (DTW). U obou rukou se hodnotí i vzájemná poloha. Poloha v obrazu a vzdálenost od kamery se normalizují; podobný úhel ruky a dobré světlo pomáhají. Výrazně rozdílné ukázky nebo téměř totožné uložené gesto se odmítnou. Nejednoznačné rozpoznání nespustí akci. Nejvýše lze uložit 32 gest. Chybějící body a časové výpadky nepovažujeme za platnou ukázku.
+
+Šablony a přiřazení se atomicky ukládají do `~/Library/Application Support/Gaze Grab/gestures.json`. Ukládají se souřadnice příznaků, nikoli snímky kamery. Po restartu se načtou. Rozpracované ukázky jsou pouze v paměti a zavřením učení nebo zastavením kamery se zruší. Poškozený či nečitelný soubor se automaticky nepřepisuje.
+
+## Plynulost kurzoru
+
+Posuvník **Vyhlazení kurzoru** odděluje klid pohybu od jeho rychlosti. Vpravo potlačuje chvění výrazněji, vlevo má menší zpoždění. Adaptivní filtr dlaně vyhlazuje pomalý pohyb a při rychlém zvyšuje odezvu. Systémový kurzor se navíc posouvá v 60Hz krocích mezi výsledky kamery, takže nesleduje jen jednotlivé příchody snímků. **Rychlost kurzoru** dál nastavuje dosah relativního pohybu. Výpadek ruky, scroll, klik nebo vypnutí ovládání ruší neprovedený pohyb, aby kurzor nedojížděl po ztrátě sledování.
+
 ## Diagnostika
 
 - Živý zrcadlený náhled a obrysy ruky, očí a zornic ve správných souřadnicích i při změně poměru stran kamery.
@@ -57,7 +75,7 @@ Otevření průvodce vypíná systémové ovládání. Cvičný kurzor a kliky z
 
 ## Soukromí a provoz
 
-Snímání používá pouze video. Obraz a souřadnice se zpracovávají lokálně v paměti; neukládají se fotografie, video ani diagnostické logy do souborů a nic se neodesílá na server. Nástroj nevyžaduje přístup k mikrofonu ani zachycení obrazovky. Zpřístupnění je potřeba jen pro zapnuté ovládání systémové myši, kamera a diagnostika fungují bez něj. Oprávnění kamery vyřizuje standardní dialog macOS. Podepsaný balíček má jen odpovídající camera entitlement.
+Snímání používá pouze video. Obraz a souřadnice se zpracovávají lokálně v paměti; neukládají se fotografie, video ani diagnostické logy do souborů; vlastní naučené šablony bodů rukou se ukládají podle popisu výše a nic se neodesílá na server. Nástroj nevyžaduje přístup k mikrofonu ani zachycení obrazovky. Zpřístupnění je potřeba jen pro zapnuté ovládání systémové myši, kamera a diagnostika fungují bez něj. Oprávnění kamery vyřizuje standardní dialog macOS. Podepsaný balíček má jen odpovídající camera entitlement.
 
 AVCaptureSession se konfiguruje na vlastní frontě, Vision běží sériově na druhé frontě s limitem 15 analýz za sekundu a zahazováním opožděných snímků. Výsledky po zastavení nebo změně session se ignorují pomocí generace výstupu. UI zobrazuje skutečnou rychlost zpracování; při nedostatku snímků zruší platnost překryvu.
 
@@ -69,7 +87,7 @@ cargo run -p gaze-grab -- --vision-probe
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Testy ověřují relativní pohyb bez počátečního skoku a jeho akceleraci, postupné zatlačení přes mezilehlé polohy, klik vůči délce konkrétního ukazováku, alternativní pinch a opětovné odjištění, nezávislost obou rukou při změně pořadí detekcí, odmítnutí nejasné strany, přípravu/potvrzení/opakování kliku, scroll bez kliku a oba způsoby scrollování, otevření před uchopením, rozlišení dvou/tří prstů, potvrzení a hysterezi, rušení při ztrátě ruky/skoku/změně času, nezávislost vzdáleností na měřítku a poměru stran a odmítnutí mrknutí/chybějících zornic. `--vision-probe` spustí skutečné Vision requesty nad prázdným lokálním snímkem bez použití kamery a ověří, že nevymýšlejí ruku ani obličej.
+Testy ověřují učení a následné rozpoznání póz i pohybů, obě ruce, odlišný směr pohybu, potlačení opakovaných a nejednoznačných akcí, ukládání/přiřazení/mazání, neúspěšný zápis bez změny modelů, přerušenou ukázku a chybějící klouby, redukci chvění filtrem, relativní pohyb bez počátečního skoku a jeho akceleraci, postupné zatlačení přes mezilehlé polohy, klik vůči délce konkrétního ukazováku, alternativní pinch a opětovné odjištění, nezávislost obou rukou při změně pořadí detekcí, odmítnutí nejasné strany, přípravu/potvrzení/opakování kliku, scroll bez kliku a oba způsoby scrollování, otevření před uchopením, rozlišení dvou/tří prstů, potvrzení a hysterezi, rušení při ztrátě ruky/skoku/změně času, nezávislost vzdáleností na měřítku a poměru stran a odmítnutí mrknutí/chybějících zornic. `--vision-probe` spustí skutečné Vision requesty nad prázdným lokálním snímkem bez použití kamery a ověří, že nevymýšlejí ruku ani obličej.
 
 ## Použitá nativní API
 

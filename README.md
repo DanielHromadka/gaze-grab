@@ -8,7 +8,7 @@ Prototyp ovládání kurzoru pravou rukou, gest jedné i obou rukou a diagnostik
 ./scripts/install-gaze-grab.sh
 ```
 
-Aplikace se nainstaluje do `/Applications/Gaze Grab.app`. V **Rustletu → Gaze Grab → Nastavení…** otevřeš diagnostiku; samostatně je dostupná také přes ikonu oka v horní liště. Nástroj se přidává do `manager/resources/catalog.json`.
+Aplikace se nainstaluje do `/Applications/Gaze Grab.app`. V **Rustletu → Gaze Grab → Nastavení…** otevřeš diagnostiku; samostatně je dostupná také přes ikonu oka v horní liště. Nástroj se přidává do `resources/catalog.json` v samostatném repozitáři [Rustlet](https://github.com/DanielHromadka/rustlet).
 
 1. Otevři diagnostiku a klikni na **Zapnout kameru**. macOS při prvním použití požádá o přístup ke kameře. V rozbalovacím seznamu lze vybrat jinou kameru.
 2. Ukaž jednu nebo obě celé otevřené ruce. Pravá je tyrkysová, levá fialová; popisky jsou anatomické a nezávislé na straně obrazu. Každá má vlastní stav gest. Ukaž celou otevřenou ruku. Po 100 ms platného otevření je systém připravený.
@@ -92,3 +92,20 @@ Testy ověřují učení a následné rozpoznání póz i pohybů, obě ruce, od
 ## Použitá nativní API
 
 [Apple Vision: rozlišení strany ruky](https://developer.apple.com/documentation/vision/vnhumanhandposeobservation/chirality), [ověření Zpřístupnění](https://developer.apple.com/documentation/applicationservices/1459186-axisprocesstrustedwithoptions), [události scrollování](https://developer.apple.com/documentation/coregraphics/cgeventcreatescrollwheelevent).
+
+## macOS instalátory a GitHub Actions
+
+Repozitář: https://github.com/DanielHromadka/gaze-grab
+
+Workflow **macOS installers** běží po pushi do `main`, v pull requestech a ručně přes **Actions → macOS installers → Run workflow**. Oddělené macOS runnery sestaví Apple Silicon (`arm64`) a Intel (`x86_64`), spustí Rust testy a Clippy a nahrají artefakty dostupné v detailu běhu po dobu 30 dnů.
+
+Každý artefakt obsahuje `.pkg` instalátor do `/Applications`, `.dmg` s aplikací a odkazem na Applications a `.sha256` soubor. Instalátor ani aplikace se při ověřování nespouštějí. Lokálně:
+
+```sh
+./scripts/package-macos.sh
+# Výstup: dist/installers/
+```
+
+Pro GitHub Release uprav `Cargo.toml` i `resources/Info.plist` na novou verzi, aktualizuj `Cargo.lock`, commitni a pushni tag `v<verze>`. Tag musí odpovídat `CFBundleShortVersionString`. Až projdou oba buildy, workflow publikuje v tomto repozitáři Release s oběma architekturami. Soukromé repo znamená i soukromé artefakty a vydání.
+
+**Podpisy:** CI zatím používá ad hoc podpis aplikace; `.pkg` není podepsaný certifikátem Developer ID Installer a balíčky nejsou notarizované Applem. Gatekeeper je proto nemusí otevřít běžným dvojklikem. Pro distribuci bez tohoto omezení je nutné doplnit Developer ID Application/Installer a notarizaci. Pipeline neexportuje lokální klíče ani certifikáty. Tyto instalační artefakty nezveřejňují ani nepřepisují podepsané aktualizační feedy Rustlet/Sparkle; stávající ověřování aktualizací zůstává aktivní.
